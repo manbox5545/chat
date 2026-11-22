@@ -2215,8 +2215,21 @@ async function streamGeminiResponse({ text, attachments }) {
 
 
 function isImageGenerationRequest(text) {
-  return /\b(generate|create|make|draw|design|सृजन|बनाओ|बनाना)\b/i.test(text) &&
-         /\b(image|picture|photo|art|illustration|wallpaper|logo|poster|चित्र|तस्वीर)\b/i.test(text);
+  const value = String(text || '').trim();
+  const explicitImageRequest =
+    /\b(generate|create|make|draw|design|सृजन|बनाओ|बनाना|बनाइए|बनाएं)\b/i.test(value) &&
+    /\b(image|picture|photo|art|illustration|wallpaper|logo|poster|drawing|thumbnail|banner|avatar|icon|graphic|visual|चित्र|तस्वीर|फोटो|लोगो|पोस्टर)\b/i.test(value);
+  if (explicitImageRequest) return true;
+
+  const contextualFollowUp =
+    /^(please\s+)?(create|make|generate|draw|do|go ahead|yes|sure|करो|बनाओ)(\s+(it|one|that|this|the one))?[.! ]*$/i.test(value) ||
+    /^(yes|yeah|sure|go ahead)[,! ]+(create|make|generate|draw)(\s+(it|one|that|this))?[.! ]*$/i.test(value);
+  if (!contextualFollowUp) return false;
+
+  const previousMessages = messages.slice(0, -1).slice(-8);
+  return previousMessages.some(message =>
+    /\b(image|picture|photo|artwork|illustration|wallpaper|logo|poster|drawing|thumbnail|banner|avatar|image generation|generate an image)\b|चित्र|तस्वीर|फोटो|लोगो|पोस्टर/i.test(String(message.text || ''))
+  );
 }
 async function downloadGeneratedImage(url) {
   try {
@@ -2276,10 +2289,14 @@ $('snakeCanvas').addEventListener('touchend',e=>{
 },{passive:true});
 
 async function sendImageGenerationRequest(prompt) {
+  const imageContext = messages.slice(0, -1).slice(-6).map(message => ({
+    role: message.role === 'assistant' ? 'model' : 'user',
+    text: String(message.text || '').slice(0, 700)
+  }));
   const job={id:crypto.randomUUID(),role:'assistant',text:'',imageJob:'working',createdAt:Date.now()};
   messages.push(job); renderMessages(); setStatus('Creating image…');
   try {
-    const promptResponse=await fetch(`${API_BASE_URL}/api/image-prompt`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt})});
+    const promptResponse=await fetch(`${API_BASE_URL}/api/image-prompt`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,history:imageContext})});
     const promptData=await promptResponse.json().catch(()=>({}));
     if(!promptResponse.ok) throw new Error(promptData.error || 'Gemini could not prepare the image prompt.');
     const imageUrl=await generateImage(promptData.prompt || prompt);
