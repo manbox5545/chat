@@ -1807,6 +1807,48 @@ body::before {
 <script>
 
 const $ = id => document.getElementById(id);
+
+// Recover gracefully if browser storage or startup code is unavailable.
+const mpoxelStorage = (() => {
+  try {
+    const store = window.localStorage;
+    const probe = '__mpoxel_storage_probe__';
+    store.setItem(probe, '1');
+    store.removeItem(probe);
+    return store;
+  } catch (error) {
+    console.warn('Mpoxel: browser storage unavailable; using temporary in-memory storage.', error);
+    const memory = new Map();
+    return { getItem: key => memory.has(key) ? memory.get(key) : null, setItem: (key, value) => memory.set(key, String(value)), removeItem: key => memory.delete(key) };
+  }
+})();
+
+let mpoxelStartupRecovered = false;
+function recoverMpoxelStartup(reason) {
+  if (mpoxelStartupRecovered) return;
+  mpoxelStartupRecovered = true;
+  console.error('Mpoxel startup recovery:', reason);
+  const intro = document.getElementById('intro');
+  if (intro) intro.classList.add('hidden');
+  try {
+    if (typeof initializeLocal === 'function') initializeLocal();
+  } catch (error) {
+    console.error('Mpoxel workspace initialization failed:', error);
+    const status = document.getElementById('intro-status');
+    if (status) status.textContent = 'Startup error. Refresh the page and check the browser console.';
+  }
+}
+window.addEventListener('error', event => {
+  if (!mpoxelStartupRecovered) recoverMpoxelStartup(event.error || event.message || 'Unknown startup error');
+});
+window.addEventListener('unhandledrejection', event => {
+  console.error('Mpoxel unhandled promise rejection:', event.reason);
+});
+setTimeout(() => {
+  const intro = document.getElementById('intro');
+  if (intro && !intro.classList.contains('hidden')) recoverMpoxelStartup('Startup took too long');
+}, 8000);
+
 const API_BASE_URL = 'https://chat-62cg.onrender.com';
 const API_URL = `${API_BASE_URL}/api/chat`;
 const MODEL_NAME = 'Gemini AI';
@@ -1817,7 +1859,7 @@ const STORAGE_KEY = 'mpoxel_local_chats_v1';
 
 let conversations = [];
 let messages = [];
-let activeConversationId = localStorage.getItem('mpoxel_active_chat') || null;
+let activeConversationId = mpoxelStorage.getItem('mpoxel_active_chat') || null;
 let selectedFiles = [];
 let pendingUserMessage = null;
 let streamingReply = null;
@@ -1911,8 +1953,8 @@ async function inferContentType(file) {
 }
 function persistState() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ conversations, messagesByChat }));
-    localStorage.setItem('mpoxel_active_chat', activeConversationId || '');
+    mpoxelStorage.setItem(STORAGE_KEY, JSON.stringify({ conversations, messagesByChat }));
+    mpoxelStorage.setItem('mpoxel_active_chat', activeConversationId || '');
   } catch (error) {
     console.warn('Could not save chat history:', error);
     showToast('Browser storage is full. Delete older chats or use smaller attachments.');
@@ -1921,7 +1963,7 @@ function persistState() {
 let messagesByChat = {};
 function loadState() {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+    const saved = JSON.parse(mpoxelStorage.getItem(STORAGE_KEY) || '{}');
     conversations = Array.isArray(saved.conversations) ? saved.conversations : [];
     messagesByChat = saved.messagesByChat && typeof saved.messagesByChat === 'object' ? saved.messagesByChat : {};
   } catch (_) { conversations = []; messagesByChat = {}; }
@@ -1985,7 +2027,7 @@ function createConversation() {
 }
 function setActiveConversation(id) {
   activeConversationId = id;
-  localStorage.setItem('mpoxel_active_chat', id);
+  mpoxelStorage.setItem('mpoxel_active_chat', id);
   messages = Array.isArray(messagesByChat[id]) ? messagesByChat[id] : [];
   pendingUserMessage = null; streamingReply = null;
   renderHistory(); renderMessages();
@@ -2455,4 +2497,118 @@ function initializeLocal() {
 
 /* Preserve the original Mpoxel startup intro, but initialize browser storage using the browser storage + Gemini stack. */
 async function startMpoxel() {
-  const intro = $('intr
+  const intro = $('intro');
+  const canvas = $('intro-canvas');
+  const status = $('intro-status');
+  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const lowEnd = (navigator.hardwareConcurrency || 4) <= 4 ||
+    matchMedia('(max-width:600px)').matches || (navigator.deviceMemory || 4) <= 4;
+  let renderer = null, running = false, frame = 0, finished = false;
+
+  function openApp() {
+    if (finished) return;
+    finished = true;
+    running = false;
+    cancelAnimationFrame(frame);
+    if (renderer) { renderer.dispose(); renderer.forceContextLoss(); renderer = null; }
+    intro.classList.add('hidden');
+    initializeLocal();
+  }
+
+  if (reducedMotion) { status.textContent = 'Opening your workspace…'; setTimeout(openApp, 250); return; }
+  const safetyTimer = setTimeout(openApp, 6500);
+
+  try {
+    status.textContent = 'Building your AI workspace…';
+    const THREE = await import('https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js');
+    if (finished) return;
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, .1, 100);
+    camera.position.z = 7;
+    renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: !lowEnd, powerPreference: 'low-power' });
+    renderer.setPixelRatio(Math.min(devicePixelRatio || 1, lowEnd ? 1 : 1.5));
+    renderer.setSize(innerWidth, innerHeight);
+
+    const orbGeometry = new THREE.IcosahedronGeometry(1.15, lowEnd ? 1 : 2);
+    const orb = new THREE.Mesh(orbGeometry, new THREE.MeshStandardMaterial({
+      color: 0x7564ff, metalness: .55, roughness: .28, emissive: 0x241080,
+      emissiveIntensity: 1.1, flatShading: true
+    }));
+    scene.add(orb);
+    const wireGeometry = new THREE.IcosahedronGeometry(1.2, 1);
+    const wire = new THREE.Mesh(wireGeometry, new THREE.MeshBasicMaterial({
+      color: 0xb4a5ff, wireframe: true, transparent: true, opacity: .19
+    }));
+    scene.add(wire);
+    const ringGeometry = new THREE.TorusGeometry(1.65, .012, 6, lowEnd ? 32 : 64);
+    const ring = new THREE.Mesh(ringGeometry, new THREE.MeshBasicMaterial({
+      color: 0x9380ff, transparent: true, opacity: .7
+    }));
+    ring.rotation.x = 1.1; ring.rotation.y = .35; scene.add(ring);
+    const light = new THREE.PointLight(0x9280ff, 25);
+    light.position.set(2, 2, 4); scene.add(light); scene.add(new THREE.AmbientLight(0x6677bb, 1.8));
+
+    const starCount = lowEnd ? 55 : 120;
+    const positions = new Float32Array(starCount * 3);
+    for (let i = 0; i < starCount; i++) {
+      positions[i * 3] = (Math.random() - .5) * 11;
+      positions[i * 3 + 1] = (Math.random() - .5) * 7;
+      positions[i * 3 + 2] = (Math.random() - .5) * 4;
+    }
+    const starGeometry = new THREE.BufferGeometry();
+    starGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const stars = new THREE.Points(starGeometry, new THREE.PointsMaterial({
+      color: 0xb3aaff, size: lowEnd ? .025 : .035, transparent: true, opacity: .7
+    }));
+    scene.add(stars);
+
+    const start = performance.now();
+    const duration = 2100;
+    running = true;
+    status.textContent = 'Opening Mpoxel AI…';
+    function cleanup() {
+      running = false; cancelAnimationFrame(frame);
+      orbGeometry.dispose(); orb.material.dispose();
+      wireGeometry.dispose(); wire.material.dispose();
+      ringGeometry.dispose(); ring.material.dispose();
+      starGeometry.dispose(); stars.material.dispose();
+    }
+    function resize() {
+      if (!renderer || finished) return;
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    }
+    window.addEventListener('resize', resize, { passive: true });
+    function animate(now) {
+      if (!running || finished) return;
+      const progress = Math.min((now - start) / duration, 1);
+      const ease = 1 - Math.pow(1 - progress, 3);
+      orb.rotation.y += .009; orb.rotation.x += .003;
+      wire.rotation.y -= .004; wire.rotation.x += .002; ring.rotation.z += .004;
+      orb.scale.setScalar(.3 + ease * .7);
+      renderer.render(scene, camera);
+      if (progress < 1) frame = requestAnimationFrame(animate);
+      else {
+        cleanup();
+        window.removeEventListener('resize', resize);
+        clearTimeout(safetyTimer);
+        openApp();
+      }
+    }
+    frame = requestAnimationFrame(animate);
+    window.addEventListener('pagehide', cleanup, { once: true });
+  } catch (error) {
+    console.warn('Three.js intro unavailable:', error);
+    clearTimeout(safetyTimer);
+    openApp();
+  }
+}
+
+startMpoxel();
+
+</script>
+
+</body>
+
+</html>
