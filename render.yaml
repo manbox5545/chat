@@ -19,6 +19,8 @@ services:
         value: '@cf/black-forest-labs/flux-1-schnell'
       - key: MPOXEL_ALLOWED_ORIGINS
         value: 'https://mpoxel.in,https://www.mpoxel.in'
+      - key: MPOXEL_ALLOWED_ORIGINS
+        value: 'https://mpoxel.in,https://www.mpoxel.in,https://chat.mpoxel.in'
       - key: MAX_CONCURRENT_REQUESTS
         value: '4'
       - key: MAX_QUEUE_SIZE
